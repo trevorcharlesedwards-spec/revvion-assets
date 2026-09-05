@@ -95,44 +95,81 @@ T_END   = T_ITEM0 + SEG * 4   # 26.8
 
 ROW_H = 215
 Y_ACTIVE = 1080
+if "MODE" in dir():
+    pass
 
 
 def fmt(n, unit):
     return f"{n:,}{unit}" if n >= 1000 else f"{n}{unit}"
 
 
+# ---------- layout mode ----------
+# METRICS: all four values are real, comparable measurements. Numbers are shown and
+#          bars are drawn PROPORTIONAL to the largest value.
+# STORY:   any value is None. This is a sequence of beats, not a set of measurements,
+#          so NO numbers and NO bars are drawn — a bar next to a beat means nothing.
+# Deriving this automatically is deliberate: it makes the broken hybrid unrepresentable.
+VALUES = [it[1] for it in ITEMS]
+MODE = "metrics" if all(isinstance(v, (int, float)) for v in VALUES) else "story"
+VMAX = max([v for v in VALUES if isinstance(v, (int, float))], default=0)
+
+
+def check_copy():
+    """Fail loudly rather than render something that misleads."""
+    assert len(ITEMS) == 4, f"expected 4 items, got {len(ITEMS)}"
+    for label, val, unit, sub in ITEMS:
+        assert label.strip(), "empty label"
+        assert sub.strip(), f"{label}: every row needs a subline that explains it"
+        if MODE == "story":
+            assert val is None, (
+                f"{label}: mixed row types. Either every row is a real measurement "
+                f"or none are — a number on one beat and not another reads as broken.")
+    if MODE == "metrics":
+        assert VMAX > 0, "metrics mode with no positive value — use None values instead"
+    return MODE
+
+
 def draw_row(d, i, x_off, alpha, y, prog, active):
-    """One list row: rank chip, label, growing bar, counting number. Never overflows."""
+    """One row. In metrics mode: number + bar proportional to the largest value.
+    In story mode: label and subline only — no invented number, no meaningless bar."""
     label, target, unit, sub = ITEMS[i]
     A = lambda c: tuple(int(BG[k] + (c[k] - BG[k]) * alpha) for k in range(3))
 
     L = 92 + x_off
     R = W - 92
 
-    # number first — it owns the right edge, so the label gets what is left
-    shown = fmt(int(round(target * prog)), unit)
-    widest = fmt(target, unit)
-    f_n = fit(d, widest, CB, 92, 400)
-    num_w = d.textlength(widest, font=f_n)
-
     d.rounded_rectangle([L, y, L + 72, y + 72], 10, fill=A(GOLD if active else GREEN))
     d.text((L + 36, y + 34), str(i + 1), font=FF(CB, 50), fill=A(IVORY), anchor="mm")
 
-    f_l = fit(d, label, CB, 58, (R - num_w - 40) - (L + 104))
-    d.text((L + 104, y + 36), label, font=f_l,
-           fill=A(IVORY if active else GREY), anchor="lm")
-    d.text((R, y + 36), shown, font=f_n,
-           fill=A(GOLD_HI if active else GOLD), anchor="rm")
+    if MODE == "metrics":
+        shown = fmt(int(round(target * prog)), unit)
+        widest = fmt(target, unit)
+        f_n = fit(d, widest, CB, 92, 400)
+        num_w = d.textlength(widest, font=f_n)
+        f_l = fit(d, label, CB, 58, (R - num_w - 40) - (L + 104))
+        d.text((L + 104, y + 36), label, font=f_l,
+               fill=A(IVORY if active else GREY), anchor="lm")
+        d.text((R, y + 36), shown, font=f_n,
+               fill=A(GOLD_HI if active else GOLD), anchor="rm")
 
-    by = y + 96
-    d.rounded_rectangle([L, by, R, by + 14], 7, fill=A((30, 30, 30)))
-    if prog > 0:
-        d.rounded_rectangle([L, by, L + max(14, (R - L) * prog), by + 14], 7,
-                            fill=A(GOLD_HI if active else GREEN))
+        # bar length means something: it is this value against the biggest one
+        share = (target / VMAX) if VMAX else 0.0
+        by = y + 96
+        d.rounded_rectangle([L, by, R, by + 14], 7, fill=A((30, 30, 30)))
+        filled = (R - L) * share * prog
+        if filled >= 3:
+            d.rounded_rectangle([L, by, L + filled, by + 14], 7,
+                                fill=A(GOLD_HI if active else GREEN))
+        sub_y = by + 42
+    else:
+        f_l = fit(d, label, CB, 58, R - (L + 104))
+        d.text((L + 104, y + 36), label, font=f_l,
+               fill=A(IVORY if active else GREY), anchor="lm")
+        sub_y = y + 92
 
     if active and alpha > 0.9:
         f_s = fit(d, sub, SR, 38, R - L)
-        d.text((L, by + 42), sub, font=f_s, fill=A(GREY), anchor="lt")
+        d.text((L, sub_y), sub, font=f_s, fill=A(GREY), anchor="lt")
 
 
 def frame(n):
@@ -219,6 +256,7 @@ def frame(n):
 
 
 def main(out):
+    print("layout mode:", check_copy())
     cmd = ["ffmpeg", "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
            "-i", "-", "-an",
