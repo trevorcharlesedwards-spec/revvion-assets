@@ -3,12 +3,23 @@
 
     make_bed.py <out.wav> [seconds] [style] [seed]
 
-Styles: nordic · dnb · hybrid · auto (default)
+Styles: ragga · ragga_chill · ragga_up · dnb · hybrid · auto (default)
 
-"auto" picks a style and a seed from the date and the post slot, so the three
-posts that go out on a given day never share a track, and a track does not
-repeat for weeks. Nothing here is sampled or licensed — every sound is
-synthesised from scratch, so there is no copyright question and no music
+The house sound is **ragga jungle / reggae drum & bass** — Trevor's own listening
+(Benny Page mashups, D&B reggae bootlegs). Chopped break at 168-180, warm long
+sub, and the offbeat skank chord soaked in dub delay, which is the bit that makes
+it read as reggae rather than plain D&B.
+
+`ragga_chill` and `ragga_up` are the same genre at different energies, so a bed
+can suit what the post actually says: a "you missed a day" post wants chill, a
+merch or PB post wants up.
+
+Called with no arguments it picks style and seed freshly at random, so three
+posts in one run get three different tracks. Pass `auto "YYYY-MM-DD#slot"` for
+the deterministic version, which guarantees three different styles per day.
+
+Nothing here is sampled or licensed — every sound is synthesised from scratch, so
+there is no copyright question, no Content ID fingerprint to match, and no music
 library to keep in sync.
 """
 import sys, hashlib, datetime
@@ -226,7 +237,140 @@ def build_hybrid(dur, rng):
     return out, BPM
 
 
-STYLES = {"nordic": build_nordic, "dnb": build_dnb, "hybrid": build_hybrid}
+
+def build_ragga(dur, rng, mood=None):
+    """Ragga jungle / reggae D&B — the Benny Page lane.
+
+    `mood` drives energy so the bed can suit what the post actually says:
+      chill  — slower, half-time, sparse, long sub, drowning in delay
+      mid    — the middle
+      up     — faster, busier break, brighter skank, punchier sub
+
+    Almost every other choice is randomised per render — progression, skank
+    rhythm, break pattern, filter colour, whether a melodica line appears — so
+    two beds in the same mood still don't sound like the same track.
+    """
+    if mood is None:
+        mood = str(rng.choice(["chill", "mid", "up"]))
+    N = int(SR * dur)
+    out = np.zeros(N)
+    skank_bus = np.zeros(N)
+
+    cfg = {
+        "chill": dict(bpm=[166., 168., 170.], ghosts=1, extra=False, bright=0.72,
+                      subdur=2.9, hats=0.5, verb=0.30, dly=0.70, skank=1.20, lead=0.55),
+        "mid":   dict(bpm=[172., 174.],       ghosts=3, extra=True,  bright=1.0,
+                      subdur=2.1, hats=0.8, verb=0.20, dly=0.62, skank=1.45, lead=0.30),
+        "up":    dict(bpm=[176., 178., 180.], ghosts=5, extra=True,  bright=1.28,
+                      subdur=1.4, hats=1.0, verb=0.13, dly=0.48, skank=1.60, lead=0.15),
+    }[mood]
+
+    BPM = float(rng.choice(cfg["bpm"]))
+    beat = 60.0 / BPM
+    bar = beat * 4
+
+    def kick():
+        n = int(0.32 * SR); x = np.arange(n) / SR
+        f = 124 * np.exp(-x * 30) + 46
+        body = np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-x / 0.062)
+        return body * 0.95 + hp(rng.standard_normal(n), 2000) * np.exp(-x * 500) * 0.35
+
+    def snare(b=1.0, lvl=1.0):
+        n = int(0.22 * SR); x = np.arange(n) / SR
+        noise = hp(rng.standard_normal(n), 1200 * b * cfg["bright"]) * np.exp(-x / 0.048)
+        tone = (np.sin(2 * np.pi * 196 * x) + np.sin(2 * np.pi * 342 * x)) * np.exp(-x / 0.03)
+        return (noise * 0.95 + tone * 0.4) * 1.15 * lvl
+
+    def ghost():
+        n = int(0.06 * SR); x = np.arange(n) / SR
+        return hp(rng.standard_normal(n), 2500) * np.exp(-x / 0.012) * 0.30
+
+    def hat(lvl=1.0):
+        n = int(0.05 * SR)
+        return hp(rng.standard_normal(n), 8000) * np.exp(-np.arange(n) / (SR * 0.009)) * 0.26 * lvl
+
+    def sub(freq, d):
+        n = int(d * SR); x = np.arange(n) / SR
+        sig = np.sin(2 * np.pi * freq * x) + 0.13 * np.sin(4 * np.pi * freq * x)
+        return sig * adsr(n, 0.014, 0.05, 0.92, 0.09) * 0.30
+
+    def skank(root, d=0.085):
+        n = int(d * SR); x = np.arange(n) / SR
+        ch = sum(saw(root * r, n, rng.random()) for r in (1.0, 1.1892, 1.4983)) / 3.0
+        ch = lp(hp(ch, 420), 3100 * cfg["bright"])
+        ch = ch + 0.35 * hp(ch, 1800)
+        return ch * np.exp(-x / 0.034) * cfg["skank"]
+
+    def melodica(freq, d):
+        n = int(d * SR); x = np.arange(n) / SR
+        vib = 1 + 0.006 * np.sin(2 * np.pi * 5.2 * x)
+        tone = (np.sin(2 * np.pi * freq * x * vib)
+                + 0.34 * np.sin(4 * np.pi * freq * x * vib)
+                + 0.16 * np.sin(6 * np.pi * freq * x * vib))
+        return lp(tone, 2600) * adsr(n, 0.05, 0.12, 0.7, 0.3) * 0.20
+
+    PROGS = [[1.0, 1.0, .8909, .8909, .8409, .8409, .8909, 1.0],
+             [1.0, 1.0, 1.0, .8409, .8909, .8909, 1.0, 1.0],
+             [1.0, .9439, .8909, .8409, 1.0, .9439, .8909, .7937]]
+    SKANKS = [(0.5, 1.5, 2.5, 3.5), (0.5, 1.5, 2.25, 2.5, 3.5), (0.5, 2.5), (0.75, 1.5, 2.75, 3.5)]
+    prog = PROGS[int(rng.integers(len(PROGS)))]
+    skank_at = SKANKS[int(rng.integers(len(SKANKS)))]
+    base = float(rng.choice([46.249, 48.999, 51.913, 55.000]))
+    use_lead = rng.random() < cfg["lead"]
+    scale = np.array([0, 3, 5, 7, 10]) / 12.0
+
+    nb = int(dur / bar) + 2
+    for b in range(nb):
+        b0 = b * bar
+        r = base * prog[b % len(prog)]
+
+        place(out, kick(), b0)
+        place(out, snare(), b0 + beat * 2)
+        if cfg["extra"]:
+            place(out, kick(), b0 + beat * 2.5, 0.72)
+            if b % 2 == 1:
+                place(out, kick(), b0 + beat * 3.25, 0.6)
+        if cfg["extra"] and b % 4 == 3:
+            place(out, snare(1.15, 0.8), b0 + beat * 3.5)
+            place(out, snare(1.3, 0.6), b0 + beat * 3.75)
+        gpos = rng.choice(range(16), size=cfg["ghosts"], replace=False)
+        for k in range(16):
+            t = b0 + k * beat / 4
+            if k in gpos:
+                place(out, ghost(), t, 0.9)
+            place(out, hat(cfg["hats"] * (1.0 if k % 4 == 2 else 0.45)), t)
+
+        place(out, sub(r, beat * cfg["subdur"]), b0)
+        if mood != "chill":
+            place(out, sub(r, beat * 1.3), b0 + beat * 2.5)
+
+        for k, off in enumerate(skank_at):
+            place(skank_bus, skank(r * 4), b0 + beat * off, 1.0 if k % 2 else 0.72)
+
+        if use_lead and b % 4 == 1:
+            deg = scale[int(rng.integers(len(scale)))]
+            place(out, melodica(r * 8 * (2 ** deg), beat * 2.2), b0 + beat * 1.5, 0.9)
+
+    delayed = np.zeros(N)
+    tap = skank_bus.copy()
+    for rep in range(4):
+        shift = int(beat * 1.5 * SR * (rep + 1))
+        if shift >= N:
+            break
+        tap = lp(tap, 2600 - rep * 400) * cfg["dly"]
+        delayed[shift:] += tap[: N - shift]
+    out += skank_bus + delayed
+
+    out = reverb(out, 1.0 + cfg["verb"], cfg["verb"], rng, 4200)
+    return out, BPM
+
+
+def build_ragga_chill(dur, rng): return build_ragga(dur, rng, "chill")
+def build_ragga_up(dur, rng):    return build_ragga(dur, rng, "up")
+
+
+STYLES = {"ragga": build_ragga, "ragga_chill": build_ragga_chill,
+          "ragga_up": build_ragga_up, "dnb": build_dnb, "hybrid": build_hybrid}
 SLOTS = ["app", "audience", "merch"]
 
 
